@@ -1,0 +1,38 @@
+﻿# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Environment
+.env
+*.env
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Generated data
+experiments/**/data/
+experiments/**/outputs/
+
+# Large model/checkpoint files
+*.pt
+*.pth
+*.bin
+*.safetensors
+*.ckpt
+
+# IDE
+.vscode/
+.idea/
+
+# Codex temp
+.codex/
