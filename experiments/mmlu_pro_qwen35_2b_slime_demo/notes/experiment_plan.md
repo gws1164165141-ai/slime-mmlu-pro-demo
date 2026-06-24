@@ -54,3 +54,29 @@ Run a small, server-side reinforcement learning demo on MMLU-Pro to verify the d
 - Rollout latency and tokens per second.
 - GPU memory usage per card.
 - Any OOM, timeout, or API failure details.
+
+## Baseline eval: Qwen3.5-2B + SGLang + MMLU-Pro dev_100 direct-answer
+
+Date: 2026-06-24
+
+Setup:
+- Model: Qwen3.5-2B
+- Serving engine: SGLang
+- API endpoint: http://localhost:30000/v1/chat/completions
+- Dataset: MMLU-Pro dev_100
+- Prompt mode: direct-answer
+- Generation:
+  - temperature = 0
+  - max_tokens = 8
+
+Result:
+- total = 100
+- errors = 0
+- prediction_none = 0
+- correct = 19
+- accuracy = 0.19
+
+Notes:
+- The original step-by-step prompt caused long reasoning outputs and was truncated before the final answer.
+- Direct-answer prompt avoids truncation and allows stable A-J answer extraction.
+- This is a direct-answer baseline, not a CoT baseline.
