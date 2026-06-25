@@ -193,3 +193,48 @@ This is not a data, reward, checkpoint conversion, or SGLang rollout issue.
 
 Use Qwen3.5-0.8B to validate the full SLIME smoke training loop first, because it is smaller and has an official SLIME model script. Keep Qwen3.5-2B as a documented hardware and kernel compatibility issue unless a more suitable GPU, backend, or model spec is available.
 
+## 2026-06-25 Qwen2.5-0.5B MMLU-Pro smoke and reward parser validation
+
+### Summary
+
+Qwen2.5-0.5B-Instruct was used as the smoke model after Qwen3.5-2B was blocked by Transformer Engine attention backend constraints on RTX 3090. The Qwen2.5-0.5B smoke run successfully exercised the full SLIME training loop: checkpoint load, SGLang rollout, custom reward, ref_log_probs forward, actor train, weight update, and checkpoint save.
+
+### Smoke v1: step-by-step prompt
+
+- Script: `experiments/mmlu_pro_qwen35_2b_slime_demo/slime_scripts/run_qwen25_05b_mmlu_pro_smoke.sh`
+- Prompt data: `/workspace/demo/data/train_500.jsonl`
+- Output: `/outputs/mmlu_pro_smoke/qwen2.5-0.5B-Instruct`
+- Result: job succeeded and checkpoint was saved.
+- Key finding: `rollout/truncated_ratio = 1.0`, because the prompt asked the model to think step by step while `--rollout-max-response-len` was only 128.
+
+### Smoke v2: short-answer prompt
+
+- Script: `experiments/mmlu_pro_qwen35_2b_slime_demo/slime_scripts/run_qwen25_05b_mmlu_pro_short_answer_smoke.sh`
+- Prompt data: `/workspace/demo/data/train_500_short_answer.jsonl`
+- Output: `/outputs/mmlu_pro_smoke/qwen2.5-0.5B-Instruct-short-answer`
+- Result: job succeeded and checkpoint was saved.
+- Key finding: response length dropped substantially and `rollout/truncated_ratio` dropped to 0.25, but raw reward remained blocked by reward parsing because model outputs such as `A. $44,100` were not accepted by the original parser.
+
+### Reward parser fix
+
+The reward parser was updated to extract the last assistant block before parsing, and to accept leading option formats such as `A. $44,100` or `A) ...`. This avoids matching options inside the prompt while supporting common model answer formats.
+
+Validation command result:
+
+- `extract = A`
+- `reward_A = 1.0`
+- `reward_E = 0.0`
+- `final_I = 1.0`
+
+### Smoke v3: short-answer rewardfix
+
+- Script: `experiments/mmlu_pro_qwen35_2b_slime_demo/slime_scripts/run_qwen25_05b_mmlu_pro_short_answer_rewardfix_smoke.sh`
+- Prompt data: `/workspace/demo/data/train_500_short_answer.jsonl`
+- Output: `/outputs/mmlu_pro_smoke/qwen2.5-0.5B-Instruct-short-answer-rewardfix`
+- Result: job succeeded and checkpoint was saved.
+- Key metrics: `rollout/raw_reward = 0.25`, `rollout/truncated = 0.25`, and `train/grad_norm` became non-zero.
+
+### Conclusion
+
+The Qwen2.5-0.5B MMLU-Pro smoke path is now validated. The full SLIME loop runs successfully on RTX 3090, and the reward parser can now assign non-zero raw reward for realistic short-answer outputs.
+

@@ -14,6 +14,8 @@ ANSWER_RE = re.compile(
     re.IGNORECASE,
 )
 TRAILING_LETTER_RE = re.compile(r"(?:^|[\s\n])([A-J])(?:[\s\.\)]*)$", re.IGNORECASE)
+LEADING_OPTION_RE = re.compile(r"^\s*([A-J])(?:[\.\)]|\s|$)", re.IGNORECASE)
+ASSISTANT_BLOCK_RE = re.compile(r"<\|im_start\|>assistant\n(.*?)(?:<\|im_end\|>|$)", re.DOTALL | re.IGNORECASE)
 
 
 def normalize_label(label: Any) -> str | None:
@@ -23,17 +25,30 @@ def normalize_label(label: Any) -> str | None:
     return label if label in VALID_LABELS else None
 
 
+def _assistant_text(text: str) -> str:
+    matches = list(ASSISTANT_BLOCK_RE.finditer(text))
+    if matches:
+        return matches[-1].group(1).strip()
+    return text.strip()
+
+
 def extract_answer(text: Any) -> str | None:
     """Extract an A-J answer from common final-answer formats."""
     if not isinstance(text, str):
         return None
 
+    body = _assistant_text(text)
+
     for pattern in (FINAL_ANSWER_RE, ANSWER_RE, TRAILING_LETTER_RE):
-        matches = list(pattern.finditer(text))
+        matches = list(pattern.finditer(body))
         if matches:
             return matches[-1].group(1).upper()
-    return None
 
+    leading_match = LEADING_OPTION_RE.search(body)
+    if leading_match:
+        return leading_match.group(1).upper()
+
+    return None
 
 def compute_reward(response: Any, label: Any) -> float:
     expected = normalize_label(label)
