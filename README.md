@@ -26,3 +26,4 @@ experiments/
     ├── data/
     └── outputs/
 
+<img width="1491" height="1055" alt="image" src="https://github.com/user-attachments/assets/f5e580ed-aa1f-4716-91fa-d7396739de31" />
