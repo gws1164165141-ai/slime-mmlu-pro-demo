@@ -83,3 +83,42 @@ Wrote 0 rows to ..\data\dev_100.jsonl
 - 解决方法：改为使用 `test` split 生成 train 和 dev，使用 `validation` split 生成 val；同时输出文件名改为实际行数，并在 offset 越界时抛 `ValueError`。
 - 如何验证修复成功：用 mock 数据验证输出为 `train_20.jsonl`、`dev_10.jsonl`、`val_70.jsonl`，且 offset 越界会报错。
 - 是否还存在风险：还需要在服务器用真实 `TIGER-Lab/MMLU-Pro` 数据集完整验证。
+
+## 2026-06-25 Qwen3.5-2B HF to Megatron checkpoint conversion
+
+- Goal: Convert local Qwen3.5-2B Hugging Face checkpoint into Megatron torch_dist checkpoint for later SLIME training.
+- HF checkpoint on host: `/home/xudongmao/models/Qwen3.5-2B`
+- HF checkpoint in container: `/models/Qwen3.5-2B`
+- Model args script: `experiments/mmlu_pro_qwen35_2b_slime_demo/slime_scripts/models/qwen3.5-2B.sh`
+- Output checkpoint on host: `/data1/xudongmao/slime_outputs/converted_models/qwen3.5-2B_torch_dist`
+- Output checkpoint in container: `/outputs/converted_models/qwen3.5-2B_torch_dist`
+
+Key model args:
+
+- `num-layers = 24`
+- `hidden-size = 2048`
+- `ffn-hidden-size = 6144`
+- `num-attention-heads = 8`
+- `num-query-groups = 2`
+- `kv-channels = 256`
+- `vocab-size = 248320`
+- `rotary-base = 10000000`
+- `rotary-percent = 0.25`
+
+Generated checkpoint files:
+
+- `release/__0_0.distcp`
+- `release/__0_1.distcp`
+- `release/common.pt`
+- `release/metadata.json`
+- `latest_checkpointed_iteration.txt`
+
+Validation:
+
+- `latest_checkpointed_iteration.txt = release`
+- checkpoint size: about 3.6G
+- checkpoint owner on host: `xudongmao:xudongmao`
+- GPU 1 was released after conversion.
+- GPU 0 remained occupied by the existing SGLang service.
+
+Result: conversion succeeded.
