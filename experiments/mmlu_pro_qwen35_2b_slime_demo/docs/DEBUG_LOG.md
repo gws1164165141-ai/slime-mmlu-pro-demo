@@ -122,3 +122,74 @@ Validation:
 - GPU 0 remained occupied by the existing SGLang service.
 
 Result: conversion succeeded.
+
+## 2026-06-25 Qwen3.5-2B SLIME smoke training blocked by TE attention backend on RTX 3090
+
+### Goal
+
+Run minimal SLIME smoke training for Qwen3.5-2B on MMLU-Pro.
+
+Expected smoke loop:
+
+```text
+rollout -> reward -> ref_log_probs -> policy update
+```
+
+### What succeeded
+
+- Docker GPU container started successfully on host GPU 1.
+- Ray started successfully.
+- SGLang rollout engine started successfully.
+- Qwen3.5-2B HF checkpoint was loaded by SGLang.
+- Megatron torch_dist checkpoint was loaded successfully.
+- Megatron actor to SGLang engine weight update succeeded.
+- Rollout generation succeeded.
+- Custom reward function `mmlu_reward.reward_func` was called successfully.
+- MMLU-Pro `prompt` and `label` fields were valid.
+
+### Failure point
+
+The job consistently failed at Megatron training-side `ref_log_probs` forward.
+
+Main error:
+
+```text
+ValueError: No dot product attention backend is available for the provided inputs.
+```
+
+### Backend diagnostics
+
+Tested attention backends:
+
+- `--attention-backend flash`
+- `--attention-backend fused`
+- `--attention-backend unfused`
+- attempted `--attention-backend local`, but Megatron only allows local backend with `--spec local`
+
+Transformer Engine debug showed:
+
+```text
+compute_capability = sm86
+qkv_layout = thd_thd_thd
+head_dim_qk = 256
+head_dim_v = 256
+
+FlashAttention 3 disabled because compute capability is not sm90.
+FlashAttention 2 disabled for the current head_dim / sm86 combination.
+FusedAttention disabled because no backend supports the provided input.
+UnfusedDotProductAttention disabled because qkv_format = thd.
+
+Available backends = {FlashAttention=False, FusedAttention=False, UnfusedDotProductAttention=False}
+Selected backend = NoBackend
+```
+
+### Conclusion
+
+Qwen3.5-2B smoke training is blocked on the current RTX 3090 / sm86 environment due to Transformer Engine attention backend incompatibility with Qwen3.5-2B `head_dim=256` and packed THD attention layout.
+
+This is not a data, reward, checkpoint conversion, or SGLang rollout issue.
+
+### Next plan
+
+Use Qwen3.5-0.8B to validate the full SLIME smoke training loop first, because it is smaller and has an official SLIME model script. Keep Qwen3.5-2B as a documented hardware and kernel compatibility issue unless a more suitable GPU, backend, or model spec is available.
+
