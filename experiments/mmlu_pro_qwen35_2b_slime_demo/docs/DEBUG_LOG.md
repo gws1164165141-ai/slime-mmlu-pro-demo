@@ -682,3 +682,494 @@ Reasoning-format outputs may require additional parser support for formats such 
 Do not overclaim reasoning improvement.
 If the next goal is engineering, clean files and commit the parser/reward/script/debug-log changes.
 If the next goal is reasoning ability, design a separate reasoning evaluation or reasoning reward instead of only extending forced-choice training.
+
+## 2026-06-26 Qwen3.5-2B attention backend triage plan
+
+### Problem
+Qwen3.5-2B SLIME smoke training is blocked by Transformer Engine DotProductAttention backend selection.
+The known error is: No dot product attention backend is available for the provided inputs.
+
+### Current evidence
+- Qwen3.5-2B HF model exists at /home/xudongmao/models/Qwen3.5-2B.
+- Converted Megatron checkpoint exists at /data1/xudongmao/slime_outputs/converted_models/qwen3.5-2B_torch_dist.
+- SLIME smoke script exists: experiments/mmlu_pro_qwen35_2b_slime_demo/slime_scripts/run_qwen35_2b_mmlu_pro_smoke.sh.
+- Previous smoke reached Megatron forward/ref_log_probs stage, so this is not a reward parser problem.
+- The failure happens inside Transformer Engine DotProductAttention backend selection.
+
+### Prior failed attempts
+1. attention-backend flash/unfused still failed with No dot product attention backend available.
+2. attention-backend local with transformer-impl local failed during argument validation because Megatron requires --attention-backend local only with --spec local.
+
+### Hypotheses
+H1: usable TE backend was manually disabled by NVTE_FLASH_ATTN=0 or NVTE_FUSED_ATTN=0.
+H2: Qwen3.5-2B head_dim=256 is not accepted by the active backend on RTX 3090 / sm86 under current runtime conditions.
+H3: packed THD qkv layout causes unfused backend to be disabled.
+H4: padding_causal mask or variable-length layout makes the selected backend ineligible.
+H5: GQA config with num_attention_heads=8 and num_query_groups=2 triggers backend ineligibility.
+H6: local attention backend cannot be used with qwen3_5 spec and is not a valid quick fix.
+H7: qwen3_5 Megatron spec is incompatible with current slime / TE / Megatron environment for this model shape.
+
+### Triage method
+Do not directly migrate 0.5B V9 reward scripts to 2B yet.
+First collect environment information and run minimal backend-selection tests with NVTE_DEBUG=1 and NVTE_DEBUG_LEVEL=2.
+Only change one variable per experiment.
+Record every experiment as: config, expected result, actual result, interpretation, next action.
+
+### Immediate next steps
+1. Inspect current 2B smoke script and qwen3.5-2B model args.
+2. Record installed versions: torch, transformer_engine, flash_attn, cuDNN, CUDA, GPU compute capability.
+3. Create a minimal 2B backend reproduction script with smallest batch and response length.
+4. First test: remove forced disabling of flash/fused backends and let TE auto-select.
+5. If auto-selection fails, inspect NVTE debug reasons before trying another fix.
+
+## 2026-06-26 Qwen3.5-2B attention backend evidence update
+
+### Evidence collected
+Inspected run_qwen35_2b_mmlu_pro_smoke.sh and qwen3.5-2B model args.
+
+### Script evidence
+The current 2B smoke script uses:
+- attention-backend = unfused
+- NVTE_FLASH_ATTN = 0
+- NVTE_FUSED_ATTN = 0
+- NVTE_UNFUSED_ATTN = 1
+- NVTE_DEBUG = 1
+- NVTE_DEBUG_LEVEL = 2
+
+Interpretation:
+The script explicitly disables FlashAttention and FusedAttention, then asks Transformer Engine to use UnfusedAttention.
+
+### Model shape evidence
+Qwen3.5-2B model args show:
+- hidden-size = 2048
+- num-attention-heads = 8
+- num-query-groups = 2
+- kv-channels = 256
+
+Therefore:
+head_dim = 2048 / 8 = 256
+
+### Runtime environment evidence
+Container environment:
+- torch = 2.11.0+cu129
+- CUDA = 12.9
+- GPU = NVIDIA GeForce RTX 3090
+- compute capability = sm86
+- transformer_engine = 2.10.0
+- flash_attn = 2.7.4.post1
+
+New issue found:
+torch.backends.cudnn reports a cuDNN mismatch. PyTorch was compiled against cuDNN 9.17.1 but runtime found cuDNN 9.16.0, likely due to LD_LIBRARY_PATH.
+
+### Old NVTE debug evidence
+Previous unfused debug log shows:
+- qkv_layout = thd_thd_thd
+- head_dim_qk = 256
+- head_dim_v = 256
+- attn_mask_type = padding_causal
+- FlashAttention 2 disabled because NVTE_FLASH_ATTN=0
+- FlashAttention 3 disabled because NVTE_FLASH_ATTN=0
+- FusedAttention disabled because NVTE_FUSED_ATTN=0
+- UnfusedDotProductAttention disabled because qkv_format=thd
+- Available backends = all false
+- Selected backend = NoBackend
+
+### Updated hypothesis ranking
+H1 confirmed: FlashAttention and FusedAttention were manually disabled by env vars.
+H3 confirmed: UnfusedAttention is disabled for qkv_format=thd in this TE path.
+H8 added: cuDNN runtime mismatch may affect FusedAttention, so do not rely on cuDNN attention first.
+H2 still open: head_dim=256 might still be accepted by FlashAttention, because flash_attn version is 2.7.4.post1 and dropout is 0.0.
+
+### Next experiment
+Create a minimal FlashAttention-only 2B smoke script:
+- use attention-backend flash
+- enable NVTE_FLASH_ATTN=1
+- disable NVTE_FUSED_ATTN=0 to avoid cuDNN mismatch
+- disable NVTE_UNFUSED_ATTN=0 to isolate the flash path
+- keep NVTE_DEBUG=1 and NVTE_DEBUG_LEVEL=2
+- use smallest batch and short response length
+
+Expected result:
+If FlashAttention is eligible, TE should select FlashAttention and the smoke run should pass the ref_log_probs stage.
+If it fails, inspect the new NVTE debug reason for disabling FlashAttention.
+
+## 2026-06-26 Qwen3.5-2B flash-only backend experiment
+
+### Goal
+Test whether Qwen3.5-2B can pass SLIME smoke training by enabling only FlashAttention in Transformer Engine.
+
+### Config
+- attention-backend = flash
+- NVTE_FLASH_ATTN = 1
+- NVTE_FUSED_ATTN = 0
+- NVTE_UNFUSED_ATTN = 0
+- rollout-batch-size = 1
+- n-samples-per-prompt = 1
+- global-batch-size = 1
+- rollout-max-response-len = 16
+
+### Result
+The run failed during Megatron ref_log_probs forward with:
+No dot product attention backend is available for the provided inputs.
+
+### NVTE debug evidence
+Transformer Engine reported:
+- compute capability = sm86
+- qkv_layout = thd_thd_thd
+- head_dim_qk = 256
+- head_dim_v = 256
+- attn_mask_type = padding_causal
+- FlashAttention 3 disabled because compute capability is not sm90
+- FlashAttention 2 disabled due to unsupported head_dim_qk and head_dim_v on sm8.6
+- FusedAttention disabled because NVTE_FUSED_ATTN=0
+- UnfusedDotProductAttention disabled because NVTE_UNFUSED_ATTN=0
+- Available backends = all false
+- Selected backend = NoBackend
+
+### Interpretation
+FlashAttention-only does not solve the Qwen3.5-2B backend issue on the current RTX 3090 / sm86 environment.
+The main new evidence is that TE 2.10.0 rejects head_dim=256 for FlashAttention 2 on sm86 in this runtime path.
+
+### Updated hypothesis status
+H1 is only partially sufficient: enabling FlashAttention does not fix the issue.
+H2 is now strongly supported: head_dim=256 is rejected by FlashAttention 2 in this TE path on sm86.
+H3 remains confirmed: UnfusedAttention is not available for thd layout.
+H8 remains open: FusedAttention may still be possible, but cuDNN runtime mismatch must be investigated.
+
+### Next action
+Test FusedAttention / cuDNN attention path separately, preferably after inspecting the cuDNN library path and LD_LIBRARY_PATH.
+
+## 2026-06-26 cuDNN path override test result
+
+### Goal
+Test whether prepending PyTorch bundled cuDNN path to LD_LIBRARY_PATH fixes the cuDNN mismatch.
+
+### Test
+Used:
+export LD_LIBRARY_PATH=/usr/local/lib/python3.12/dist-packages/nvidia/cudnn/lib:$LD_LIBRARY_PATH
+
+### Result
+The mismatch still remains.
+PyTorch still reports:
+compiled against cuDNN 9.17.1 but found runtime cuDNN 9.16.0.
+
+### Interpretation
+The issue is not solved by simply prepending the nvidia/cudnn/lib path.
+Possible causes:
+1. the installed nvidia-cudnn-cu12 package inside the container is actually cuDNN 9.16.0
+2. another cuDNN 9.16.0 library is still being loaded first
+3. the slimerl/slime image has an internal torch/cuDNN package mismatch
+
+### Next action
+Inspect Python package versions and the actual libcudnn.so.9 loaded by the dynamic linker before running FusedAttention-only.
+
+## 2026-06-26 cuDNN package version evidence
+
+### Goal
+Confirm whether the cuDNN mismatch is caused by the installed Python cuDNN package version.
+
+### Evidence
+Inside slimerl/slime:latest:
+- torch = 2.11.0+cu129
+- nvidia-cudnn-cu12 = 9.16.0.29
+- nvidia-cublas-cu12 = 12.9.1.4
+- nvidia-cuda-runtime-cu12 = 12.9.79
+- transformer_engine = 2.10.0
+- flash-attn = 2.7.4.post1
+
+PyTorch reports that it was compiled against cuDNN 9.17.1 but the runtime cuDNN is 9.16.0.
+
+### Interpretation
+The cuDNN mismatch is not fixed by simply prepending the bundled cuDNN path to LD_LIBRARY_PATH.
+The installed nvidia-cudnn-cu12 package itself is 9.16.0.29, while torch expects cuDNN 9.17.1.
+This may block the Transformer Engine FusedAttention path.
+
+### Backend status update
+UnfusedAttention is unavailable because qkv_format=thd is disabled in this TE path.
+FlashAttention is unavailable because TE rejects head_dim=256 on sm86 in the flash-only experiment.
+FusedAttention has not yet been validly tested because cuDNN runtime is mismatched.
+
+### Next action
+Check available nvidia-cudnn-cu12 versions and test whether upgrading cuDNN inside a temporary container resolves torch.backends.cudnn.version().
+Only after cuDNN is fixed should FusedAttention-only be tested.
+
+## 2026-06-26 available cuDNN versions check
+
+### Goal
+Check whether a cuDNN version matching torch 2.11.0+cu129 is available from pip.
+
+### Command
+python3 -m pip index versions nvidia-cudnn-cu12
+
+### Result
+pip reports available versions including 9.17.1.4 and 9.17.0.29.
+The installed version inside slimerl/slime:latest is 9.16.0.29.
+The latest available version is 9.23.2.1.
+
+### Interpretation
+This confirms that the current image has a cuDNN package version older than what torch expects.
+PyTorch reported it was compiled against cuDNN 9.17.1, so the most conservative test target is nvidia-cudnn-cu12==9.17.1.4, not the latest 9.23.x.
+
+### Next action
+Run a one-off container test that upgrades nvidia-cudnn-cu12 to 9.17.1.4 and checks whether torch.backends.cudnn.version() succeeds.
+
+## 2026-06-26 cuDNN upgrade validation
+
+### Goal
+Validate whether upgrading nvidia-cudnn-cu12 fixes the PyTorch cuDNN runtime mismatch inside a temporary container.
+
+### Test
+Installed nvidia-cudnn-cu12==9.17.1.4 inside a one-off slimerl/slime container.
+
+### Result
+The upgrade succeeded.
+Observed:
+- torch = 2.11.0+cu129
+- torch cuda = 12.9
+- nvidia-cudnn-cu12 = 9.17.1.4
+- torch.backends.cudnn.version() = 91701
+
+### Interpretation
+The previous cuDNN mismatch was caused by the container having nvidia-cudnn-cu12 9.16.0.29 while torch expected cuDNN 9.17.1.
+After upgrading to 9.17.1.4, PyTorch can load cuDNN successfully.
+
+### Next action
+Run a FusedAttention-only Qwen3.5-2B smoke experiment in the same container session after installing nvidia-cudnn-cu12==9.17.1.4.
+This will test whether FusedAttention can handle Qwen3.5-2B head_dim=256 / THD layout on RTX 3090.
+
+## 2026-06-26 Qwen3.5-2B fused-only backend experiment
+
+### Goal
+Test whether FusedAttention can solve the Qwen3.5-2B Transformer Engine attention backend blocker after fixing the cuDNN mismatch.
+
+### Setup
+Before running the smoke script, nvidia-cudnn-cu12 was upgraded inside the temporary container to 9.17.1.4.
+The run confirmed cudNN version 9.17.1 in the TE debug config.
+
+### Config
+- attention-backend = fused
+- NVTE_FLASH_ATTN = 0
+- NVTE_FUSED_ATTN = 1
+- NVTE_UNFUSED_ATTN = 0
+- rollout-batch-size = 1
+- n-samples-per-prompt = 1
+- global-batch-size = 1
+- rollout-max-response-len = 16
+
+### Result
+The run still failed during Megatron ref_log_probs forward.
+Transformer Engine reported:
+- compute capability = sm86
+- cudnn_version = 9.17.1
+- qkv_layout = thd_thd_thd
+- qkv_dtype = bfloat16
+- batch_size = 2
+- num_heads = 8
+- num_gqa_groups = 2
+- max_seqlen_q = 223
+- max_seqlen_kv = 223
+- head_dim_qk = 256
+- head_dim_v = 256
+- attn_mask_type = padding_causal
+- attention_dropout = 0.0
+- is_training = False
+
+Backend selection:
+- FlashAttention disabled because NVTE_FLASH_ATTN=0
+- UnfusedDotProductAttention disabled because NVTE_UNFUSED_ATTN=0
+- FusedAttention disabled because no backend supports the provided input
+- Available backends = all false
+- Selected backend = NoBackend
+
+### Interpretation
+FusedAttention is not available for the Qwen3.5-2B input configuration in the current RTX 3090 / sm86 + Transformer Engine 2.10.0 path, even after fixing the cuDNN version mismatch.
+This means the original 2B blocker is not only caused by the old cuDNN mismatch.
+
+### Backend status
+UnfusedAttention: unavailable because THD qkv layout is not supported in this path.
+FlashAttention: unavailable because TE rejects head_dim=256 on sm86 in the flash-only experiment.
+FusedAttention: unavailable because no cuDNN backend supports the provided input configuration.
+
+### Current conclusion
+Qwen3.5-2B cannot currently complete SLIME smoke training on this RTX 3090 / sm86 environment through the available TE attention backends.
+Most likely blocker: head_dim=256 + GQA + THD layout + padding_causal under the qwen3_5 Megatron spec.
+
+### Next options
+Option A: test on a newer GPU such as sm90/H100 where FlashAttention 3 may be available.
+Option B: use a model variant with smaller head_dim or a known compatible SLIME model script, such as Qwen3.5-0.8B or Qwen2.5-0.5B/1.5B.
+Option C: change the Megatron/spec/TE stack, but this is a deeper infrastructure change rather than reward adaptation.
+
+## 2026-06-26 Qwen3.5-2B HF reasoning probe result
+
+### Goal
+Test Qwen3.5-2B's raw HuggingFace inference ability on two MMLU-Pro-style finance/math reasoning cases, bypassing SLIME, Megatron, and Transformer Engine training backends.
+
+### Command
+Ran the HF probe with:
+- model = /home/xudongmao/models/Qwen3.5-2B
+- max-new-tokens = 1536
+- temperature = 0.0
+
+### Result
+The probe finished successfully.
+
+Observed:
+- CASE 1 bank_discount_proceeds: correct
+- CASE 2 exact_time_interest: correct
+- SUMMARY: 2/2 correct
+
+For CASE 2, the model correctly:
+1. counted the exact time from March 8 to August 5 as 150 days;
+2. used the formula I = P * r * days / 365;
+3. computed 1262.77 * 0.08 * 150 / 365 ≈ 41.52;
+4. matched the value to Option E;
+5. ended with Final answer: E.
+
+### Interpretation
+Qwen3.5-2B shows much stronger raw reasoning behavior than the previous 0.5B smoke model on these hand-written probe cases.
+The previous 512-token probe was misleading because generation was truncated before the model reached the final answer.
+After increasing max-new-tokens to 1536, the model completed the reasoning trace and produced correct final answers.
+
+### Current conclusion
+Qwen3.5-2B is worth keeping as a capability candidate.
+The current blocker is still the SLIME/Megatron/Transformer Engine attention backend incompatibility on RTX 3090 / sm86, not a lack of raw model reasoning ability.
+
+### Next action
+Expand the HF reasoning probe from 2 cases to 5-10 cases before deciding whether to invest more engineering effort into adapting a compatible training path or selecting another model.
+
+## 2026-06-26 Qwen2.5-0.5B HF reasoning probe result
+
+### Goal
+Compare Qwen2.5-0.5B-Instruct against Qwen3.5-2B on the same two hand-written MMLU-Pro-style finance/math reasoning cases using raw HuggingFace inference.
+
+### Command
+Ran the HF probe with:
+- model = /home/xudongmao/models/Qwen2.5-0.5B-Instruct
+- max-new-tokens = 1536
+- temperature = 0.0
+
+### Result
+The probe finished successfully.
+
+Observed:
+- CASE 1 bank_discount_proceeds: incorrect
+- CASE 2 exact_time_interest: incorrect
+- SUMMARY: 0/2 correct
+
+### Error analysis
+
+For CASE 1, the model failed in multiple places:
+1. It used Interest = 45000 * 0.06 * 120 without dividing by 360.
+2. It produced an unstable arithmetic result.
+3. It computed proceeds as 12240 but selected option C = 44550, so the final option mapping was inconsistent with its own calculation.
+
+For CASE 2, the model also failed in multiple places:
+1. It incorrectly treated March 8 to August 5 as 10 months.
+2. It used an average month length instead of exact time.
+3. It failed to apply the 365-day-year denominator correctly.
+4. It produced an unrealistic interest value and then selected an option inconsistent with its own calculation.
+
+### Interpretation
+Qwen2.5-0.5B-Instruct is much weaker than Qwen3.5-2B on these raw reasoning probes.
+The 0.5B model can still be useful for validating the SLIME engineering smoke path, reward parser, rollout, GRPO update, and checkpoint saving.
+However, it should not be treated as evidence of reliable MMLU-Pro reasoning ability.
+
+### Current conclusion
+Qwen2.5-0.5B proves that the SLIME training pipeline can run, but it is not a strong capability candidate.
+Qwen3.5-2B remains a stronger capability candidate based on raw reasoning, although its current blocker is the Transformer Engine attention backend incompatibility on RTX 3090 / sm86.
+
+## 2026-06-26 Qwen2.5-1.5B HF reasoning probe result
+
+### Goal
+Evaluate Qwen2.5-1.5B-Instruct as a candidate model between Qwen2.5-0.5B and Qwen3.5-2B.
+
+### Config evidence
+The local config shows:
+- model_type = qwen2
+- architectures = Qwen2ForCausalLM
+- hidden_size = 1536
+- num_attention_heads = 12
+- num_key_value_heads = 2
+- head_dim = 128
+- torch_dtype = bfloat16
+- attention_dropout = 0.0
+- engineering_risk = LOW/MEDIUM
+
+### Probe setup
+Ran the same HF reasoning probe used for Qwen2.5-0.5B and Qwen3.5-2B:
+- max-new-tokens = 1536
+- temperature = 0.0
+- two hand-written MMLU-Pro-style finance/math cases
+
+### Result
+Observed:
+- CASE 1 bank_discount_proceeds: correct
+- CASE 2 exact_time_interest: incorrect
+- SUMMARY: 1/2 correct
+
+### Error analysis
+For CASE 1, the model correctly computed:
+- Discount = 45000 * 0.06 * 120 / 360 = 900
+- Proceeds = 45000 - 900 = 44100
+- Final answer = A
+
+For CASE 2, the model correctly identified:
+- exact time = 150 days
+- t = 150 / 365
+- Simple Interest = 1262.77 * 0.08 * 150 / 365
+
+However, it incorrectly computed the final value as approximately 41.00 instead of 41.52, and selected option D instead of E.
+
+### Interpretation
+Qwen2.5-1.5B-Instruct is clearly stronger than Qwen2.5-0.5B-Instruct on raw reasoning.
+Its main observed failure is arithmetic precision / option matching, not complete formula misunderstanding.
+It is still weaker than Qwen3.5-2B on the current two-case probe.
+
+### Current conclusion
+Qwen2.5-1.5B-Instruct is a reasonable engineering candidate because it has head_dim=128 and qwen2 architecture, but its reasoning capability may not be sufficient if Qwen3-1.7B performs better.
+Next step: run the same HF reasoning probe on Qwen3-1.7B.
+
+## 2026-06-26 Qwen3-1.7B HF reasoning probe result
+
+### Goal
+Evaluate Qwen3-1.7B as another candidate model between Qwen2.5-1.5B and Qwen3.5-2B.
+
+### Config evidence
+The local config shows:
+- model_type = qwen3
+- architectures = Qwen3ForCausalLM
+- hidden_size = 2048
+- num_attention_heads = 16
+- num_key_value_heads = 8
+- head_dim = 128
+- torch_dtype = bfloat16
+- attention_dropout = 0.0
+- engineering_risk = LOW/MEDIUM
+
+### Probe result
+Using the original long reasoning probe, Qwen3-1.7B produced long thinking traces and was truncated before final answers in some cases.
+
+Using the compact no-thinking probe:
+- CASE 1 bank_discount_proceeds: correct
+- CASE 2 exact_time_interest: incorrect
+- SUMMARY: 1/2 correct
+
+### Error analysis
+For CASE 1, the model correctly computed:
+- Discount = 45000 * 0.06 * 120 / 360 = 900
+- Proceeds = 45000 - 900 = 44100
+- Final answer = A
+
+For CASE 2, the model failed in multiple places:
+1. It computed exact time as 145 days instead of the expected 150 days.
+2. It therefore used t = 145 / 365 instead of 150 / 365.
+3. It output Interest ≈ 41.00 instead of 41.52.
+4. It ended with Final answer: <I>, confusing the interest variable I with the multiple-choice final answer format.
+
+### Interpretation
+Qwen3-1.7B has better reasoning behavior than Qwen2.5-0.5B, but it does not clearly outperform Qwen2.5-1.5B on the current two-case probe.
+The no-thinking prompt improves output control, but the model still makes a real date-counting and option-formatting error.
+
+### Current conclusion
+Qwen3-1.7B is a backup candidate, not the first engineering candidate.
+Qwen2.5-1.5B-Instruct should be prioritized for the next SLIME smoke test because it has qwen2 architecture, head_dim=128, and is closer to the already-runnable Qwen2.5-0.5B path.
