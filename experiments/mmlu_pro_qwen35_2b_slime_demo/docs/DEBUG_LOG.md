@@ -1173,3 +1173,59 @@ The no-thinking prompt improves output control, but the model still makes a real
 ### Current conclusion
 Qwen3-1.7B is a backup candidate, not the first engineering candidate.
 Qwen2.5-1.5B-Instruct should be prioritized for the next SLIME smoke test because it has qwen2 architecture, head_dim=128, and is closer to the already-runnable Qwen2.5-0.5B path.
+
+## 2026-06-26 Qwen2.5-1.5B SLIME TP2 lowmem smoke success
+
+### Goal
+Run a minimal SLIME smoke test for Qwen2.5-1.5B-Instruct after the single-GPU b1 smoke failed with optimizer-state CUDA OOM.
+
+### Final working setup
+- HF checkpoint: /home/xudongmao/models/Qwen2.5-1.5B-Instruct
+- Converted checkpoint: /data1/xudongmao/slime_outputs/converted_models/qwen2.5-1.5B-Instruct_torch_dist
+- Model args: experiments/mmlu_pro_qwen35_2b_slime_demo/slime_scripts/models/qwen2.5-1.5B.sh
+- Smoke script: experiments/mmlu_pro_qwen35_2b_slime_demo/slime_scripts/run_qwen25_15b_mmlu_pro_b1_tp2_lowmem_smoke.sh
+- Docker GPUs: device=1,2
+- Docker shared memory: --shm-size=32g
+- tensor-model-parallel-size = 2
+- actor-num-gpus-per-node = 2
+- rollout-num-gpus-per-engine = 1
+- rollout-max-response-len = 8
+- seq-length = 512
+- sglang-mem-fraction-static = 0.20
+
+### Previous failures and fixes
+1. Single-GPU b1 smoke with default Docker shared memory failed at update_weights:
+   - NCCL ncclSystemError
+   - /dev/shm/nccl-* no space left on device
+   Fix:
+   - rerun Docker with --shm-size=16g or larger.
+
+2. Single-GPU b1 smoke after fixing /dev/shm reached actor_train but failed during optimizer.step:
+   - Transformer Engine FusedAdam initialized optimizer state.
+   - CUDA OOM occurred while allocating exp_avg_sq.
+   Interpretation:
+   - Qwen2.5-1.5B can enter the train path, but single RTX 3090 24GB is too tight under colocated rollout + actor training + Adam optimizer state.
+
+3. First TP2 lowmem attempt failed because:
+   - PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True conflicted with SGLang TorchMemorySaver.
+   Fix:
+   - remove PYTORCH_CUDA_ALLOC_CONF from the Ray runtime env.
+
+4. Second TP2 lowmem attempt with sglang-mem-fraction-static=0.10 failed during SGLang memory pool initialization:
+   - RuntimeError: Not enough memory. Please try to increase --mem-fraction-static.
+   Fix:
+   - increase sglang-mem-fraction-static from 0.10 to 0.20.
+
+### Success evidence
+The final TP2 lowmem run succeeded.
+
+Observed:
+- update_weights reached 100%.
+- SGLang accepted POST /update_weights_from_tensor with HTTP 200.
+- Ray job ended with:
+  Job 'raysubmit_MrwrD6TUE4h3psGT' succeeded.
+
+### Interpretation
+Qwen2.5-1.5B-Instruct is now a valid SLIME engineering candidate.
+Compared with Qwen3.5-2B, it avoids the Transformer Engine attention backend blocker.
+Compared with Qwen2.5-0.5B, it has stronger raw reasoning behavior, but requires TP2 on RTX 3090 24GB for this colocated SLIME smoke setup.
