@@ -1229,3 +1229,140 @@ Observed:
 Qwen2.5-1.5B-Instruct is now a valid SLIME engineering candidate.
 Compared with Qwen3.5-2B, it avoids the Transformer Engine attention backend blocker.
 Compared with Qwen2.5-0.5B, it has stronger raw reasoning behavior, but requires TP2 on RTX 3090 24GB for this colocated SLIME smoke setup.
+
+## 2026-06-26 Qwen2.5 model direct dev_100 baseline eval
+
+### Goal
+Compare Qwen2.5-1.5B-Instruct and Qwen2.5-0.5B-Instruct on the same direct forced-choice dev_100 split.
+
+### Evaluation setup
+- Data: experiments/mmlu_pro_qwen35_2b_slime_demo/data/dev_100_direct.jsonl
+- Prompt style: direct forced-choice
+- Output format: one letter from A to J
+- max-new-tokens = 8
+- temperature = 0.0
+
+### Results
+Qwen2.5-1.5B-Instruct:
+- accuracy = 23/100 = 0.2300
+
+Qwen2.5-0.5B-Instruct:
+- accuracy = 12/100 = 0.1200
+
+### Qwen2.5-1.5B prediction distribution
+Gold label distribution:
+- A: 6
+- B: 11
+- C: 7
+- D: 17
+- E: 8
+- F: 14
+- G: 13
+- H: 11
+- I: 10
+- J: 3
+
+Prediction distribution:
+- A: 30
+- B: 18
+- C: 19
+- D: 5
+- E: 10
+- F: 7
+- H: 2
+- J: 9
+
+### Interpretation
+Qwen2.5-1.5B is clearly stronger than Qwen2.5-0.5B on this direct forced-choice baseline.
+However, the absolute accuracy is still low and the model shows a strong A/B/C option bias.
+This suggests that Qwen2.5-1.5B is a better engineering candidate than 0.5B, but direct-answer behavior still needs improvement.
+
+## 2026-06-26 Qwen2.5-1.5B dev_100 reasoning eval
+
+### Goal
+Check whether allowing step-by-step reasoning improves Qwen2.5-1.5B-Instruct accuracy compared with direct forced-choice output.
+
+### Evaluation setup
+- Model: /home/xudongmao/models/Qwen2.5-1.5B-Instruct
+- Data: experiments/mmlu_pro_qwen35_2b_slime_demo/data/dev_100.jsonl
+- Prompt style: Think step by step, then Final answer
+- max-new-tokens = 256
+- batch-size = 4
+- temperature = 0.0
+
+### Result
+- accuracy = 20/100 = 0.2000
+
+### Comparison
+Previous direct forced-choice result:
+- Qwen2.5-1.5B-Instruct dev_100_direct accuracy = 23/100 = 0.2300
+- Qwen2.5-0.5B-Instruct dev_100_direct accuracy = 12/100 = 0.1200
+
+### Interpretation
+The reasoning prompt did not improve accuracy for Qwen2.5-1.5B on this dev_100 split.
+The direct forced-choice prompt is currently better and much faster.
+Next training experiments should focus on improving direct forced-choice behavior and reducing option bias rather than encouraging longer reasoning.
+
+## 2026-06-26 Qwen2.5-1.5B short-answer eval
+
+### Goal
+Test whether a short final-answer format improves over direct single-letter forced-choice output.
+
+### Evaluation setup
+- Model: /home/xudongmao/models/Qwen2.5-1.5B-Instruct
+- Data: experiments/mmlu_pro_qwen35_2b_slime_demo/data/dev_100_short_answer.jsonl
+- Prompt style: no reasoning, output exactly one line: Final answer: <A-J>
+- max-new-tokens = 16
+- batch-size = 16
+- temperature = 0.0
+
+### Result
+- short-answer accuracy = 22/100 = 0.2200
+
+### Comparison
+- direct forced-choice accuracy = 23/100 = 0.2300
+- short-answer accuracy = 22/100 = 0.2200
+- reasoning_512_limit20 with fixed parser = 7/20 = 0.3500
+
+### Interpretation
+Short-answer format did not improve over direct forced-choice.
+The direct forced-choice prompt remains the best full dev_100 baseline and is also the fastest option.
+Long reasoning has some potential, but it is much slower and currently only validated on the first 20 examples.
+The next RL experiment should therefore use the direct forced-choice training data.
+
+## 2026-06-26 End-of-day status
+
+### Completed
+- Qwen2.5-1.5B-Instruct model args were added.
+- Qwen2.5-1.5B-Instruct converted checkpoint was prepared.
+- Qwen2.5-1.5B TP2 lowmem smoke succeeded.
+- The eval parser was improved to handle:
+  - Final answer: X
+  - The final answer is X
+  - Answer: X
+  - The answer is X
+  - Therefore, the correct answer is X
+  - The correct answer is X
+  - fallback to the last standalone A-J letter
+
+### Baseline evaluation results
+- Qwen2.5-0.5B direct dev_100: 12/100 = 0.1200
+- Qwen2.5-1.5B direct dev_100: 23/100 = 0.2300
+- Qwen2.5-1.5B short-answer dev_100: 22/100 = 0.2200
+- Qwen2.5-1.5B reasoning dev_100 with max-new-tokens=256: 20/100 = 0.2000
+- Qwen2.5-1.5B reasoning first20 with max-new-tokens=512 and fixed parser: 7/20 = 0.3500
+
+### Interpretation
+- Qwen2.5-1.5B is clearly stronger than Qwen2.5-0.5B on the direct forced-choice baseline.
+- Direct forced-choice remains the best full dev_100 baseline and is fastest.
+- Long reasoning has some potential, but it is slow and sensitive to max-new-tokens truncation.
+- Parser errors were confirmed to be minor, not the main cause of low reasoning_256 performance.
+
+### Current blocker
+- Attempts to scale beyond b1 smoke, such as b2/b4 direct RL, failed during SGLang memory pool initialization.
+- The latest error was:
+  RuntimeError: Not enough memory. Please try to increase --mem-fraction-static.
+- The job did not reach rollout/reward/actor train.
+- Next recommended experiment:
+  1. Create and run b1_r4: keep rollout-batch-size=1 and global-batch-size=1, only increase num-rollout to 4.
+  2. If b1_r4 succeeds, try b2_r4 with sglang-mem-fraction-static=0.25.
