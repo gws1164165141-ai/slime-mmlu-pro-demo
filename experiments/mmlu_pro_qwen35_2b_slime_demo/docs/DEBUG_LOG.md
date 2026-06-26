@@ -238,3 +238,447 @@ Validation command result:
 
 The Qwen2.5-0.5B MMLU-Pro smoke path is now validated. The full SLIME loop runs successfully on RTX 3090, and the reward parser can now assign non-zero raw reward for realistic short-answer outputs.
 
+## 2026-06-25 V6 forced-choice-16-t03 smoke
+
+### Setup
+
+V6 used a forced-choice prompt to suppress reasoning and require the model to output only one uppercase letter from A to J.
+
+- Prompt data: `train_500_forced_choice.jsonl`
+- Script: `run_qwen25_05b_mmlu_pro_forced_choice_16_t03_smoke.sh`
+- Output: `/outputs/mmlu_pro_smoke/qwen2.5-0.5B-Instruct-forced-choice-16-t03`
+- `rollout-max-response-len = 16`
+- `rollout-temperature = 0.3`
+
+### Result
+
+The full SLIME smoke chain succeeded: checkpoint loading, SGLang rollout, ref forward, actor train, checkpoint save, and Ray job completion all passed.
+
+Key metrics:
+
+- `rollout/response_len/mean = 2.0`
+- `rollout/response_len/max = 2`
+- `rollout/truncated_ratio = 0.0`
+- `rollout/raw_reward = 0.0`
+- `train/grad_norm = 0.0`
+
+### Sample analysis
+
+The forced-choice prompt successfully controlled output format. The model generated single-letter answers instead of long reasoning text.
+
+However, the sampled answers were wrong:
+
+- Atlas discount problem: model output `B`, label was `A`, reward `0.0`.
+- Exact-time interest problem: model output `A`, label was `E`, reward `0.0`.
+
+### Conclusion
+
+V6 solved the formatting and truncation problems, but did not produce a correct sampled answer in the current smoke mini-batch. The main bottleneck has moved from output format/truncation to base model option-selection accuracy. Because the smoke batch only contains 4 sampled completions, V6 does not prove that the full dataset accuracy is zero. The next step is V7, which keeps the forced-choice prompt but increases the sampled completions to 16 for a more stable estimate.
+
+## 2026-06-25 V7 forced-choice-16-t03-b16 smoke
+
+### Setup
+
+V7 kept the V6 forced-choice prompt and increased the number of sampled completions from 4 to 16.
+
+- Prompt data: `train_500_forced_choice.jsonl`
+- Script: `run_qwen25_05b_mmlu_pro_forced_choice_16_t03_b16_smoke.sh`
+- Output: `/outputs/mmlu_pro_smoke/qwen2.5-0.5B-Instruct-forced-choice-16-t03-b16`
+- `rollout-max-response-len = 16`
+- `rollout-temperature = 0.3`
+- `rollout-batch-size = 8`
+- `n-samples-per-prompt = 2`
+- `global-batch-size = 16`
+
+### Result
+
+The full SLIME smoke chain succeeded: checkpoint loading, rollout, ref forward, actor train, checkpoint save, and Ray job completion all passed.
+
+Key metrics:
+
+- `rollout/response_len/mean = 2.0`
+- `rollout/response_len/max = 2`
+- `rollout/truncated_ratio = 0.0`
+- `rollout/raw_reward = 0.0`
+- `train/grad_norm = 0.0`
+- `train/global_batch_size = 16`
+
+### Sample analysis
+
+The model continued to follow the forced-choice format and generated single-letter answers. However, the logged examples were still incorrect:
+
+- Exact-time interest problem: model output `A`, label was `E`, reward `0.0`.
+- Percent problem: model output `J`, label was `I`, reward `0.0`.
+
+### Conclusion
+
+V7 confirms that the V6 result was not only a 4-sample fluctuation. Even with 16 sampled completions, the forced-choice setting produced no correct reward. The output format and truncation issues are solved, but the base model option-selection accuracy on these MMLU-Pro samples is too low to create a useful RL signal under the current exact-match reward. The next step should be a diagnostic reasoning run to inspect visible reasoning errors, followed by partial reward design or easier warm-up data.
+
+## 2026-06-25 V8 diagnostic-reasoning-512-t03 smoke
+
+### Setup
+
+V8 was designed as a diagnostic reasoning run rather than a reward-improving training run. The prompt asked the model to solve step by step, compute the numeric answer, match it to one option, and end with `Final answer: <A-J>`.
+
+- Prompt data: `train_500_diagnostic_reasoning.jsonl`
+- Script: `run_qwen25_05b_mmlu_pro_diagnostic_reasoning_512_t03_smoke.sh`
+- Output: `/outputs/mmlu_pro_smoke/qwen2.5-0.5B-Instruct-diagnostic-reasoning-512-t03`
+- `rollout-max-response-len = 512`
+- `rollout-temperature = 0.3`
+- `global-batch-size = 2`
+
+### Result
+
+The full SLIME smoke chain succeeded: checkpoint loading, rollout, ref forward, actor train, checkpoint save, and Ray job completion all passed.
+
+Key metrics:
+
+- `rollout/response_len/mean = 417.5`
+- `rollout/response_len/max = 434`
+- `rollout/truncated_ratio = 0.0`
+- `rollout/raw_reward = 0.0`
+- `train/grad_norm = 0.0`
+
+### Visible reasoning analysis
+
+V8 exposed the model visible reasoning errors.
+
+1. Exact-time interest problem:
+   - Label: `E = $41.52`
+   - Model treated March 15 to August 12 as `1 year`.
+   - It computed `1262.77 * 0.08 * 1 = 100.4136`.
+   - It then incorrectly matched `$100.41` to `J = $38.70`.
+   - Error type: date-span error + option-matching error.
+
+2. Bank discount / proceeds problem:
+   - Label: `A = $44,100`
+   - Correct discount is `45000 * 0.06 * 120/360 = 900`; proceeds are `45000 - 900 = 44100`.
+   - Model treated 120 days as approximately 1 month, then applied a full 6% discount: `45000 * 0.94 = 42300`.
+   - It finally selected `F = $900`, confusing the discount amount with the proceeds.
+   - Error type: time conversion error + discount formula error + target quantity confusion.
+
+### Conclusion
+
+V8 confirms that the current bottleneck is not only output formatting or truncation. The model can generate long visible reasoning without truncation, but its financial/math reasoning is unreliable. It makes formula, time-span, numeric, and option-matching errors. Under exact-match reward, this produces all-zero rewards and no useful RL gradient. The next step should be partial reward or easier warm-up data rather than more long-reasoning smoke runs.
+
+## 2026-06-26 V9 partial reward parser debug
+
+### Goal
+Continue V9 partial reward experiment for Qwen2.5-0.5B-Instruct on MMLU-Pro forced-choice data.
+Main question: why did the previous V9 run still show reward 0.0 even though custom-rm-path pointed to mmlu_reward_partial.reward_func.
+
+### Starting point
+Formal V9 script had these important settings:
+- custom-rm-path = mmlu_reward_partial.reward_func
+- global-batch-size = 32
+- n-samples-per-prompt = 4
+- rollout-temperature = 0.7
+- rollout-max-response-len = 16
+
+Expected partial reward behavior:
+- correct parsed answer -> 1.0
+- parseable but wrong A-J answer -> 0.1
+- unparseable answer -> 0.0
+
+### Previous symptom
+Earlier V9 logs showed parseable-looking model outputs but reward stayed 0.0:
+- assistant I, label A, reward 0.0
+- assistant A, label I, reward 0.0
+- rollout raw_reward = 0.0
+- train grad_norm = 0.0
+
+This was inconsistent with the intended partial reward rule because I vs A should be 0.1, not 0.0.
+
+### Debug reward setup
+Created debug reward file:
+cp experiments/mmlu_pro_qwen35_2b_slime_demo/reward/mmlu_reward_partial.py experiments/mmlu_pro_qwen35_2b_slime_demo/reward/mmlu_reward_partial_debug.py
+
+Modified mmlu_reward_partial_debug.reward_func to print:
+- sample_type
+- sample_keys
+- kwargs_keys
+- response
+- label
+- computed_reward
+
+Created small batch debug script:
+experiments/mmlu_pro_qwen35_2b_slime_demo/slime_scripts/run_qwen25_05b_mmlu_pro_forced_choice_partial_reward_debug_b4_t07_smoke.sh
+
+Important debug config:
+- custom-rm-path = mmlu_reward_partial_debug.reward_func
+- rollout-batch-size = 2
+- n-samples-per-prompt = 2
+- global-batch-size = 4
+- rollout-temperature = 0.7
+
+Purpose: run a small and fast rollout to inspect reward_func input and computed reward.
+
+### First debug finding
+Debug logs showed that SLIME passed a Sample object and _get_response did receive completion strings.
+Observed response format:
+- F<|im_end|>
+- A<|im_end|>
+- I<|im_end|>
+
+However computed_reward was still 0.0 at first.
+This proved the issue was not missing response fields. The real issue was parser handling of special tokens.
+
+### Parser bug
+The parser had become too strict and did not parse bare completions with special tokens such as A<|im_end|>.
+Because of this, extract_answer returned None for A<|im_end|>, so compute_reward returned 0.0.
+
+### Parser fix
+Fixed _assistant_text in experiments/mmlu_pro_qwen35_2b_slime_demo/reward/mmlu_reward_partial.py.
+New behavior: after extracting the assistant body, remove special tokens before parsing.
+Special tokens cleaned:
+- <|im_end|>
+- <|endoftext|>
+
+Validation result after fix:
+- extract_answer(A<|im_end|>) = A
+- compute_reward(A<|im_end|>, A) = 1.0
+- compute_reward(F<|im_end|>, A) = 0.1
+- compute_reward(I do not know<|im_end|>, A) = 0.0
+
+This confirms that A<|im_end|> is now parsed correctly and I do not know is not misparsed as option I.
+
+### Second debug run after parser fix
+After synchronizing the fixed parser into mmlu_reward_partial_debug.py, the small batch debug run showed:
+- response = A<|im_end|>, label = E, computed_reward = 0.1
+- response = B<|im_end|>, label = A, computed_reward = 0.1
+
+Rollout log also showed:
+- label A, reward 0.1
+- label E, reward 0.1
+- rollout raw_reward = 0.1
+
+This confirms that partial reward now enters SLIME correctly.
+
+### Remaining issue
+Training metrics still showed:
+- rollout raw_reward = 0.1
+- rollout advantages = 0.0
+- train grad_norm = 0.0
+
+This is no longer a parser bug.
+Reason: in the small debug batch, all sampled completions received the same reward 0.1. There was no within-group reward difference. For GRPO, equal rewards inside a group produce zero advantage, so policy gradient loss and grad_norm stay zero.
+
+### Current conclusion
+Parser and partial reward engineering bugs are fixed.
+Confirmed:
+- SLIME reward_func receives responses like A<|im_end|>
+- parser strips <|im_end|> before answer extraction
+- wrong but parseable A-J outputs now receive reward 0.1
+- rollout raw_reward changed from 0.0 to 0.1
+
+Still unresolved:
+- small batch has no effective policy gradient because all rewards are equal
+- need larger batch or easier data to create reward diversity, such as 1.0 vs 0.1 or 0.1 vs 0.0
+
+### Next step
+Rerun formal V9 b32 t0.7 with fixed parser.
+Success criteria:
+- raw_reward >= 0.1 means partial reward is active
+- raw_reward > 0.1 means at least some samples likely got 1.0
+- advantages nonzero means GRPO has usable relative signal
+- grad_norm nonzero means actual policy update occurred
+
+Failure interpretation:
+- raw_reward = 0.1, advantages = 0, grad_norm = 0 means partial reward works but all samples have equal reward
+- raw_reward > 0.1, advantages nonzero, grad_norm nonzero means V9 produced effective training signal
+- raw_reward = 0 means formal V9 did not use the fixed parser or reward path correctly
+
+## 2026-06-26 V9 formal b32 fixed-parser result
+
+### Goal
+Rerun formal V9 after fixing the partial reward parser.
+This run uses fixed parser + partial reward + forced-choice prompt + larger batch.
+
+### Script
+experiments/mmlu_pro_qwen35_2b_slime_demo/slime_scripts/run_qwen25_05b_mmlu_pro_forced_choice_partial_reward_b32_t07_smoke.sh
+
+Important config:
+- custom-rm-path = mmlu_reward_partial.reward_func
+- rollout-batch-size = 8
+- n-samples-per-prompt = 4
+- global-batch-size = 32
+- rollout-temperature = 0.7
+- rollout-max-response-len = 16
+
+### Key rollout samples
+First rollout sample:
+- model output = A<|im_end|>
+- label = A
+- reward = 1.0
+
+Finish rollout sample:
+- model output = A<|im_end|>
+- label = J
+- reward = 0.1
+
+Interpretation:
+- correct parsed answer receives 1.0
+- wrong but parseable A-J answer receives 0.1
+- fixed parser is active in the formal V9 run
+
+### Key metrics
+Observed metrics:
+- rollout/raw_reward = 0.38125
+- rollout/rewards approximately 0 after normalization
+- rollout/advantages approximately 0 as an averaged scalar
+- train/pg_loss = 3.725290298461914e-09
+- train/grad_norm = 63.101710973113676
+- train/global_batch_size = 32
+- Job succeeded
+- checkpoint saved to /outputs/mmlu_pro_smoke/qwen2.5-0.5B-Instruct-forced-choice-partial-reward-b32-t07
+
+### Interpretation
+This is the first V9 run with effective training signal.
+raw_reward = 0.38125 is much larger than 0.1, which means the batch contained some correct answers with reward 1.0 in addition to wrong-but-parseable answers with reward 0.1.
+Assuming all 32 samples were parseable, raw_reward = 0.38125 corresponds approximately to 10 correct samples and 22 wrong-but-parseable samples:
+0.38125 * 32 = 12.2 total reward
+1.0 * 10 + 0.1 * 22 = 12.2
+
+The averaged rollout/advantages value is close to zero because advantages are centered or averaged, but train/grad_norm = 63.1017 confirms that a real gradient update occurred.
+
+### Conclusion
+Parser bug is fixed.
+Partial reward is active in formal V9.
+The larger b32/t0.7 setting created reward diversity.
+This run produced a nonzero grad_norm and therefore an effective policy update.
+
+### Next decision
+Keep this checkpoint for now because it is the first V9 checkpoint with effective training signal.
+Next steps can be:
+1. rerun with the same setting to check stability;
+2. increase num-rollout or run more training steps;
+3. compare fixed-parser V9 against V3 rewardfix and earlier V6/V7 runs;
+4. add parser tests to the repository before committing.
+
+## 2026-06-26 Diagnostic reasoning inspection
+
+### Goal
+Inspect whether the model is actually reasoning or only producing correct forced-choice letters by chance or option bias.
+This diagnostic step uses long reasoning outputs from the existing diagnostic reasoning log.
+
+### Key observation
+The formal V9 fixed-parser run produced effective training signal, but that does not prove real reasoning ability.
+The V9 forced-choice prompt only asks the model to output one uppercase letter from A to J, so the rollout logs show only the final letter, not the reasoning process.
+
+### Diagnostic sample 1: exact-time interest problem
+Question: a loan of 1262.77 is made on March 15 and repaid on August 12 at 8 percent annual interest, using exact time.
+Correct label: E.
+
+Model behavior:
+- The model wrote the correct simple-interest formula.
+- However, it set Time = 1 year.
+- It computed 1262.77 * 0.08 * 1 = 100.4136.
+- It then tried to match 100.41 to the options and ended with J.
+
+Correct reasoning should use the exact number of days, about 150 days:
+interest = 1262.77 * 0.08 * 150 / 365 ≈ 41.52, corresponding to option E.
+
+Interpretation:
+The model can imitate a formulaic solution format, but it misread the time condition. This is not reliable reasoning.
+
+### Diagnostic sample 2: bank discount / proceeds problem
+Question: a 45000 note is discounted 120 days before due at a 6 percent bank discount rate. Find the proceeds.
+Correct label: A.
+
+Model behavior:
+- The model incorrectly treated 120 days as approximately 1 month.
+- It applied 6 percent in an inconsistent way.
+- It confused the discount amount with the proceeds.
+- It selected F, which corresponds to 900, the discount amount, not the proceeds.
+
+Correct reasoning should be:
+discount = 45000 * 0.06 * 120 / 360 = 900
+proceeds = 45000 - 900 = 44100, corresponding to option A.
+
+Interpretation:
+The model has weak numerical reasoning and weak financial-term grounding. It confuses discount and proceeds.
+
+### Current conclusion
+The fixed-parser V9 result should be interpreted as parser/reward/training-signal success, not as proof that the model can truly reason.
+Current evidence shows:
+- parser path works
+- partial reward works
+- formal V9 b32/t0.7 creates nonzero grad_norm
+- but base-model explicit reasoning is still unreliable
+- the model may produce plausible-looking explanations with wrong assumptions
+
+### Next decision
+Before extending training, run or inspect a reasoning-style evaluation on the V9 checkpoint itself.
+The key comparison should be:
+1. base model reasoning output
+2. V9 checkpoint forced-choice output
+3. V9 checkpoint reasoning output if possible
+
+Evaluation dimensions:
+- final answer correctness
+- formula correctness
+- unit/time handling
+- option matching correctness
+- whether the explanation actually supports the final answer
+
+### Practical warning
+Do not overclaim that V9 learned reasoning just because raw_reward and grad_norm improved.
+The current safe claim is: V9 fixed-parser partial reward produced effective training signal under forced-choice supervision, while reasoning ability remains an open diagnostic question.
+
+## 2026-06-26 V9 checkpoint reasoning inspect
+
+### Goal
+Inspect whether the V9 fixed-parser checkpoint improved explicit reasoning, not only forced-choice letter selection.
+
+### Checkpoint loading
+The inspect run successfully loaded the V9 checkpoint:
+/outputs/mmlu_pro_smoke/qwen2.5-0.5B-Instruct-forced-choice-partial-reward-b32-t07
+
+This confirms the reasoning inspect was run on the V9 fixed-parser checkpoint, not only on the base converted model.
+
+### Result summary
+The V9 checkpoint still shows unreliable explicit reasoning.
+It can generate long step-by-step explanations, but the reasoning chain often contains wrong assumptions, wrong formulas, arithmetic errors, and wrong option matching.
+
+### Sample 1: exact-time interest problem
+Correct label: E.
+The model output ended with E, but the reasoning was wrong.
+Observed problems:
+- it treated March 15 to August 12 as 1 year
+- it also claimed the period was 10 months
+- it used inconsistent arithmetic
+- it said the closest option to 97.30 was 53.60
+- it wrote E. 53.60 even though E is 41.52 and 53.60 is C
+
+Interpretation:
+The final letter may match the label, but the reasoning trace does not support the answer. This is not reliable mathematical reasoning.
+
+### Sample 2: bank discount / proceeds problem
+Correct label: A.
+The model output was wrong and the reasoning was also wrong.
+Observed problems:
+- it used an incorrect formula: Principal * (1 - Discount Rate) * Number of Days
+- it failed to use 120 / 360
+- it confused discounted amount, discount, and proceeds
+- it produced arithmetic and magnitude errors
+- it matched to the wrong option
+
+Correct reasoning should be:
+discount = 45000 * 0.06 * 120 / 360 = 900
+proceeds = 45000 - 900 = 44100
+answer = A
+
+### Important interpretation
+The formal V9 b32/t0.7 run proved that parser, partial reward, and forced-choice training signal work.
+However, the V9 reasoning inspect does not prove improved reasoning ability.
+The safe claim is: V9 fixed-parser partial reward improves the forced-choice training signal, while explicit reasoning remains an open and currently weak area.
+
+### Parser note
+This reasoning inspect script still uses mmlu_reward.reward_func, not mmlu_reward_partial.reward_func.
+Therefore reward = 0.0 in this inspect run should not be used as evidence against the fixed partial reward parser.
+Reasoning-format outputs may require additional parser support for formats such as Final answer: A. xxx and boxed A if reasoning-style training is pursued.
+
+### Next decision
+Do not overclaim reasoning improvement.
+If the next goal is engineering, clean files and commit the parser/reward/script/debug-log changes.
+If the next goal is reasoning ability, design a separate reasoning evaluation or reasoning reward instead of only extending forced-choice training.
