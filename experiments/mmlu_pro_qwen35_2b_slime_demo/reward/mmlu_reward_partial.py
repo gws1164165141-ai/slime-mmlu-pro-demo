@@ -8,11 +8,11 @@ from typing import Any
 
 VALID_LABELS = set("ABCDEFGHIJ")
 
-FINAL_ANSWER_RE = re.compile(r"final\s+answer\s*[:：]\s*\(?\s*([A-J])\s*\)?", re.IGNORECASE)
-ANSWER_RE = re.compile(
-    r"(?:the\s+answer\s+is|answer)\s*[:：]?\s*\(?\s*([A-J])\s*\)?",
-    re.IGNORECASE,
-)
+FINAL_ANSWER_RE = re.compile(r"final\s+answer\s*[:：]?\s*\(?\s*([A-J])\s*\)?\b", re.IGNORECASE)
+THE_FINAL_ANSWER_RE = re.compile(r"the\s+final\s+answer\s+is\s*\(?\s*([A-J])\s*\)?\b", re.IGNORECASE)
+ANSWER_RE = re.compile(r"answer\s*[:：]\s*\(?\s*([A-J])\s*\)?\b", re.IGNORECASE)
+THE_ANSWER_IS_RE = re.compile(r"the\s+answer\s+is\s*\(?\s*([A-J])\s*\)?\b", re.IGNORECASE)
+CORRECT_ANSWER_RE = re.compile(r"(?:therefore,?\s*)?the\s+correct\s+answer\s+is\s*\(?\s*([A-J])\s*\)?\b", re.IGNORECASE)
 TRAILING_LETTER_RE = re.compile(r"(?:^|[\s\n])([A-J])(?:[\s\.\)]*)$", re.IGNORECASE)
 LEADING_OPTION_RE = re.compile(r"^\s*([A-J])(?:[\.\)]\s*|$)", re.IGNORECASE)
 ASSISTANT_BLOCK_RE = re.compile(r"<\|im_start\|>assistant\n(.*?)(?:<\|im_end\|>|$)", re.DOTALL | re.IGNORECASE)
@@ -41,7 +41,14 @@ def extract_answer(text: Any) -> str | None:
 
     body = _assistant_text(text)
 
-    for pattern in (FINAL_ANSWER_RE, ANSWER_RE, TRAILING_LETTER_RE):
+    for pattern in (
+        FINAL_ANSWER_RE,
+        THE_FINAL_ANSWER_RE,
+        CORRECT_ANSWER_RE,
+        THE_ANSWER_IS_RE,
+        ANSWER_RE,
+        TRAILING_LETTER_RE,
+    ):
         matches = list(pattern.finditer(body))
         if matches:
             return matches[-1].group(1).upper()

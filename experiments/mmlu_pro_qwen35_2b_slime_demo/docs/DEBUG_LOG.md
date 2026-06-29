@@ -1366,3 +1366,515 @@ The next RL experiment should therefore use the direct forced-choice training da
 - Next recommended experiment:
   1. Create and run b1_r4: keep rollout-batch-size=1 and global-batch-size=1, only increase num-rollout to 4.
   2. If b1_r4 succeeds, try b2_r4 with sglang-mem-fraction-static=0.25.
+
+## 2026-06-29 b1_s4_r16 RL 后训练与训练后评估
+
+### 实验目标
+验证 Qwen2.5-1.5B-Instruct 在 MMLU-Pro direct forced-choice 任务上，经过 SLIME + GRPO 小规模 RL 后训练后，dev_100_direct 准确率是否相对 baseline 提升。
+
+### 训练配置
+- 模型：Qwen2.5-1.5B-Instruct
+- 任务：MMLU-Pro direct forced-choice
+- 框架：SLIME + Megatron actor + SGLang rollout engine
+- 训练方法：GRPO
+- rollout-batch-size：1
+- n-samples-per-prompt：4
+- global-batch-size：4
+- num-rollout：16
+- rollout-temperature：1.0
+- rollout-max-response-len：8
+- checkpoint：iter_0000015
+
+### 训练过程结果
+- b1_s4_r16 job succeeded。
+- 16 个训练 step 中，有 5 个 step 的 grad_norm 非零。
+- 有效梯度 step：5/16 = 31.25%。
+- 说明该配置能够产生真实 RL 学习信号，但学习信号仍然偏稀疏。
+- 主要时间开销仍来自 Ray/SGLang/Megatron 初始化、sleep、wake_up、update_weights 和调度等待。
+
+### checkpoint 与格式转换
+- 训练后 checkpoint：
+  /data1/xudongmao/slime_outputs/mmlu_pro_runs/qwen2.5-1.5B-Instruct-tp2-direct-b1-s4-r16/iter_0000015
+- checkpoint 原始格式：Megatron / torch distributed checkpoint。
+- 已使用 convert_torch_dist_to_hf.py 转换为 HuggingFace 格式。
+- 转换后 HF 模型：
+  /data1/xudongmao/slime_outputs/hf_models/qwen2.5-1.5B-Instruct-tp2-direct-b1-s4-r16-iter15
+
+### eval 结果
+- eval 数据：dev_100_direct.jsonl
+- 训练前 baseline：23/100 = 23%
+- 训练后 iter15：25/100 = 25%
+- 提升：+2/100，即 +2 个百分点
+
+### 当前结论
+本次实验完成了从 baseline、RL 后训练、checkpoint 保存、格式转换到训练后 eval 的完整闭环。训练后准确率从 23% 提升到 25%，说明该 RL 后训练链路没有失败，并产生了轻微正向效果。但由于训练规模较小、有效梯度 step 仅为 5/16，提升幅度仍有限，不能认为模型能力已经显著提升。
+
+### 下一步计划
+1. 做训练前后样本级对比，统计 wrong→correct 和 correct→wrong 的题。
+2. 重新确认 baseline 是否为同条件 eval。
+3. 根据样本对比结果决定下一步：
+   - 如果提升样本合理，可以继续扩大训练；
+   - 如果有效梯度仍稀疏，考虑 b1_s8_r8；
+   - 或构造 reward-variance 子集，提高有效训练 step 比例。
+
+
+## 2026-06-29 b1_s4_r16 RL 后训练与训练后评估
+
+### 实验目标
+验证 Qwen2.5-1.5B-Instruct 在 MMLU-Pro direct forced-choice 任务上，经过 SLIME + GRPO 小规模 RL 后训练后，dev_100_direct 准确率是否相对 baseline 提升。
+
+### 训练配置
+- 模型：Qwen2.5-1.5B-Instruct
+- 任务：MMLU-Pro direct forced-choice
+- 框架：SLIME + Megatron actor + SGLang rollout engine
+- 训练方法：GRPO
+- rollout-batch-size：1
+- n-samples-per-prompt：4
+- global-batch-size：4
+- num-rollout：16
+- rollout-temperature：1.0
+- rollout-max-response-len：8
+- checkpoint：iter_0000015
+
+### 训练过程结果
+- b1_s4_r16 job succeeded。
+- 16 个训练 step 中，有 5 个 step 的 grad_norm 非零。
+- 有效梯度 step：5/16 = 31.25%。
+- 说明该配置能够产生真实 RL 学习信号，但学习信号仍然偏稀疏。
+- 主要时间开销仍来自 Ray/SGLang/Megatron 初始化、sleep、wake_up、update_weights 和调度等待。
+
+### checkpoint 与格式转换
+- 训练后 checkpoint：
+  /data1/xudongmao/slime_outputs/mmlu_pro_runs/qwen2.5-1.5B-Instruct-tp2-direct-b1-s4-r16/iter_0000015
+- checkpoint 原始格式：Megatron / torch distributed checkpoint。
+- 已使用 convert_torch_dist_to_hf.py 转换为 HuggingFace 格式。
+- 转换后 HF 模型：
+  /data1/xudongmao/slime_outputs/hf_models/qwen2.5-1.5B-Instruct-tp2-direct-b1-s4-r16-iter15
+
+### eval 结果
+- eval 数据：dev_100_direct.jsonl
+- 训练前 baseline：23/100 = 23%
+- 训练后 iter15：25/100 = 25%
+- 提升：+2/100，即 +2 个百分点
+
+### 当前结论
+本次实验完成了从 baseline、RL 后训练、checkpoint 保存、格式转换到训练后 eval 的完整闭环。训练后准确率从 23% 提升到 25%，说明该 RL 后训练链路没有失败，并产生了轻微正向效果。但由于训练规模较小、有效梯度 step 仅为 5/16，提升幅度仍有限，不能认为模型能力已经显著提升。
+
+### 下一步计划
+1. 做训练前后样本级对比，统计 wrong→correct 和 correct→wrong 的题。
+2. 重新确认 baseline 是否为同条件 eval。
+3. 根据样本对比结果决定下一步：
+   - 如果提升样本合理，可以继续扩大训练；
+   - 如果有效梯度仍稀疏，考虑 b1_s8_r8；
+   - 或构造 reward-variance 子集，提高有效训练 step 比例。
+
+
+## 2026-06-29 b1_s4_r16 训练前后样本级对比
+
+### 对比目标
+分析 RL 后训练前后 dev_100_direct 中哪些题目发生了正确性变化，判断 23% → 25% 的提升来源。
+
+### 输入文件
+- before eval：`experiments/mmlu_pro_qwen35_2b_slime_demo/outputs/qwen25_15b_dev100_direct_eval.jsonl`
+- after eval：`experiments/mmlu_pro_qwen35_2b_slime_demo/outputs/qwen25_15b_dev100_direct_eval_after_b1_s4_r16_iter15.jsonl`
+
+### 对比结果
+- before accuracy：23/100 = 0.2300
+- after accuracy：25/100 = 0.2500
+- delta：2
+- wrong → correct：2
+- correct → wrong：0
+- same correct：23
+- same wrong：75
+
+### 结论
+本次 RL 后训练在 dev_100_direct 上产生小幅正向变化。需要结合 wrong→correct 与 correct→wrong 样本进一步判断提升是否来自合理题型，还是小样本随机波动。
+
+### 产物
+- 样本级对比 JSONL：`experiments/mmlu_pro_qwen35_2b_slime_demo/outputs/compare_before_after_b1_s4_r16_iter15.jsonl`
+- 样本级对比 Markdown：`experiments/mmlu_pro_qwen35_2b_slime_demo/outputs/compare_before_after_b1_s4_r16_iter15.md`
+
+
+### 补充：b1_s4_r16 wrong→correct 两个样本的人工解释
+
+本次训练后 eval 相比 baseline 从 23/100 提升到 25/100。样本级对比显示新增正确样本为 idx=4 和 idx=86，且 correct→wrong 为 0。
+
+#### idx=4：Black-Scholes asset-or-nothing put option
+- label：C
+- before：J，错误
+- after：C，正确
+- 题型：金融衍生品定价 / Black-Scholes / asset-or-nothing put
+- 人工判断：该样本较可靠。根据 asset-or-nothing put 公式，价格约为 3.6 million，对应选项 C。因此该样本可以视为一次较干净的 wrong→correct。
+
+#### idx=86：markdown percent
+- label：B
+- before：F，错误
+- after：B，按数据标签正确
+- 题型：商业算术 / markdown percentage
+- 人工判断：该样本需要标记为“可能存在口径歧义”。如果按常见 markdown rate = markdown / original price，则 (2.25 - 2.00) / 2.25 ≈ 11.1%，更接近 J=11%。数据标签 B=12.5% 对应的是 0.25 / 2.00，即用降价后价格作分母。因此该样本虽然按数据标签从 wrong→correct，但是否代表真实数学能力提升需要谨慎解释。
+
+#### 更新后的实验解释
+本次 b1_s4_r16 的 23% → 25% 提升来自两个新增正确样本，且没有 correct→wrong regression。其中 idx=4 是较可靠的正向样本，idx=86 按数据标签正确但存在定义口径歧义。整体结论仍是：本次小规模 RL 后训练产生了干净但幅度较小的正向效果，后续需要更多样本和更稳定的有效梯度 step 来验证趋势。
+
+
+### 补充：b1_s4_r16 wrong→correct 两个样本的人工解释
+
+
+本次训练后 eval 相比 baseline 从 23/100 提升到 25/100。样本级对比显示新增正确样本为 idx=4 和 idx=86，且 correct→wrong 为 0。
+
+#### idx=4：Black-Scholes asset-or-nothing put option
+
+- label：C
+- before：J，错误
+- after：C，正确
+- 题型：金融衍生品定价 / Black-Scholes / asset-or-nothing put
+- 人工判断：该样本较可靠。根据 asset-or-nothing put 公式，价格约为 3.6 million，对应选项 C。因此该样本可以视为一次较干净的 wrong→correct。
+
+#### idx=86：markdown percent
+
+- label：B
+- before：F，错误
+- after：B，按数据标签正确
+- 题型：商业算术 / markdown percentage
+- 人工判断：该样本需要标记为“可能存在口径歧义”。如果按常见 markdown rate = markdown / original price，则 (2.25 - 2.00) / 2.25 ≈ 11.1%，更接近 J=11%。数据标签 B=12.5% 对应的是 0.25 / 2.00，即用降价后价格作分母。因此该样本虽然按数据标签从 wrong→correct，但是否代表真实数学能力提升需要谨慎解释。
+
+#### 更新后的实验解释
+
+本次 b1_s4_r16 的 23% → 25% 提升来自两个新增正确样本，且没有 correct→wrong regression。其中 idx=4 是较可靠的正向样本，idx=86 按数据标签正确但存在定义口径歧义。整体结论仍是：本次小规模 RL 后训练产生了干净但幅度较小的正向效果，后续需要更多样本和更稳定的有效梯度 step 来验证趋势。
+
+
+### 补充：b1_s4_r16 wrong→correct 两个样本的人工解释
+
+
+
+本次训练后 eval 相比 baseline 从 23/100 提升到 25/100。样本级对比显示新增正确样本为 idx=4 和 idx=86，且 correct→wrong 为 0。
+
+#### idx=4：Black-Scholes asset-or-nothing put option
+
+
+- label：C
+- before：J，错误
+- after：C，正确
+- 题型：金融衍生品定价 / Black-Scholes / asset-or-nothing put
+- 人工判断：该样本较可靠。根据 asset-or-nothing put 公式，价格约为 3.6 million，对应选项 C。因此该样本可以视为一次较干净的 wrong→correct。
+
+#### idx=86：markdown percent
+
+
+- label：B
+- before：F，错误
+- after：B，按数据标签正确
+- 题型：商业算术 / markdown percentage
+- 人工判断：该样本需要标记为“可能存在口径歧义”。如果按常见 markdown rate = markdown / original price，则 (2.25 - 2.00) / 2.25 ≈ 11.1%，更接近 J=11%。数据标签 B=12.5% 对应的是 0.25 / 2.00，即用降价后价格作分母。因此该样本虽然按数据标签从 wrong→correct，但是否代表真实数学能力提升需要谨慎解释。
+
+#### 更新后的实验解释
+
+
+本次 b1_s4_r16 的 23% → 25% 提升来自两个新增正确样本，且没有 correct→wrong regression。其中 idx=4 是较可靠的正向样本，idx=86 按数据标签正确但存在定义口径歧义。整体结论仍是：本次小规模 RL 后训练产生了干净但幅度较小的正向效果，后续需要更多样本和更稳定的有效梯度 step 来验证趋势。
+
+
+### 补充：b1_s4_r16 wrong→correct 两个样本的人工解释
+
+
+
+
+本次训练后 eval 相比 baseline 从 23/100 提升到 25/100。样本级对比显示新增正确样本为 idx=4 和 idx=86，且 correct→wrong 为 0。
+
+#### idx=4：Black-Scholes asset-or-nothing put option
+
+
+
+- label：C
+- before：J，错误
+- after：C，正确
+- 题型：金融衍生品定价 / Black-Scholes / asset-or-nothing put
+- 人工判断：该样本较可靠。根据 asset-or-nothing put 公式，价格约为 3.6 million，对应选项 C。因此该样本可以视为一次较干净的 wrong→correct。
+
+#### idx=86：markdown percent
+
+
+
+- label：B
+- before：F，错误
+- after：B，按数据标签正确
+- 题型：商业算术 / markdown percentage
+- 人工判断：该样本需要标记为“可能存在口径歧义”。如果按常见 markdown rate = markdown / original price，则 (2.25 - 2.00) / 2.25 ≈ 11.1%，更接近 J=11%。数据标签 B=12.5% 对应的是 0.25 / 2.00，即用降价后价格作分母。因此该样本虽然按数据标签从 wrong→correct，但是否代表真实数学能力提升需要谨慎解释。
+
+#### 更新后的实验解释
+
+
+
+本次 b1_s4_r16 的 23% → 25% 提升来自两个新增正确样本，且没有 correct→wrong regression。其中 idx=4 是较可靠的正向样本，idx=86 按数据标签正确但存在定义口径歧义。整体结论仍是：本次小规模 RL 后训练产生了干净但幅度较小的正向效果，后续需要更多样本和更稳定的有效梯度 step 来验证趋势。
+
+
+## 2026-06-29 b1_s8_r8 实验启动记录
+
+### 实验目标
+在 b1_s4_r16 已完成训练-转换-eval 闭环并得到 23% → 25% 小幅提升后，进一步测试将 n-samples-per-prompt 从 4 提高到 8 是否能提升 GRPO 的 reward 方差和有效梯度 step 比例。
+
+### 实验配置
+- 模型：Qwen2.5-1.5B-Instruct
+- 任务：MMLU-Pro direct forced-choice
+- 框架：SLIME + Megatron actor + SGLang rollout engine
+- 方法：GRPO
+- rollout-batch-size：1
+- n-samples-per-prompt：8
+- global-batch-size：8
+- num-rollout：8
+- rollout-temperature：1.0
+- rollout-max-response-len：8
+- save path：/outputs/mmlu_pro_runs/qwen2.5-1.5B-Instruct-tp2-direct-b1-s8-r8
+
+### 预期观察指标
+- train/grad_norm 非零 step 数
+- zero_std 出现比例
+- rollout/raw_reward 是否产生组内差异
+- step_time 与 wait_time_ratio
+- 是否出现 OOM / Not enough memory / Traceback
+
+### 判断标准
+如果 8 个 step 中非零 grad_norm 明显高于 b1_s4_r16 的 31.25%，说明 s8 有助于提高有效训练比例。
+如果仍然稀疏，则需要考虑 reward-variance 子集或更细粒度 reward。
+如果 OOM，则说明 s8 当前显存/配置压力偏高，需要回退或调整 batch/microbatch。
+
+
+## 2026-06-29 b1_s8_r8 job success 确认
+
+### 检查目标
+确认 b1_s8_r8 训练任务是否完整结束，是否可以进入 checkpoint 检查、HF 转换和 eval 阶段。
+
+### 日志检查结果
+训练日志中出现：
+- Job 'raysubmit_NeNFU8LeJQqEUJn4' submitted successfully
+- Job 'raysubmit_NeNFU8LeJQqEUJn4' succeeded
+
+中间出现若干 `cache_position ... not documented` 的 `[ERROR]` 信息，但最终 Ray job 明确 succeeded，因此当前判断为非致命信息，不阻塞后续 checkpoint 转换和 eval。
+
+### 当前结论
+b1_s8_r8 训练任务已成功结束，可以继续确认 latest checkpoint，并执行 Megatron checkpoint 到 HuggingFace 格式转换。
+
+### 下一步
+1. 读取 latest_checkpointed_iteration.txt。
+2. 确认 iter_xxxxxxx checkpoint 文件存在。
+3. 将 checkpoint 转换为 HF 格式。
+4. 在 dev_100_direct 上运行 eval。
+
+
+## 2026-06-29 b1_s8_r8 checkpoint 转 HF 成功
+
+### 实验阶段
+将 b1_s8_r8 的 Megatron / torch distributed checkpoint 转换为 HuggingFace 格式，供后续 eval_hf 脚本读取。
+
+### 输入 checkpoint
+/data1/xudongmao/slime_outputs/mmlu_pro_runs/qwen2.5-1.5B-Instruct-tp2-direct-b1-s8-r8/iter_0000007
+
+### 输出 HF 模型目录
+/data1/xudongmao/slime_outputs/hf_models/qwen2.5-1.5B-Instruct-tp2-direct-b1-s8-r8-iter7
+
+### 转换日志关键信息
+- 成功在 torch_dist checkpoint 中找到 embedding、attention、MLP、final_layernorm 等权重。
+- model loaded in 5.72 sec.
+- start saving to /outputs/hf_models/qwen2.5-1.5B-Instruct-tp2-direct-b1-s8-r8-iter7
+- model-00000-of-00001.safetensors saved in 2.07 sec.
+- 成功复制 config.json、tokenizer.json、tokenizer_config.json、generation_config.json、vocab.json、merges.txt 等 HF 必需文件。
+- Skip .cache, not a file. 该信息为跳过缓存目录，不影响转换结果。
+
+### 当前结论
+b1_s8_r8 的 checkpoint 已成功转换为 HuggingFace 格式，可以继续执行 dev_100_direct eval。
+
+### 下一步
+运行 eval_hf_mmlu_choice_batch.py，比较 b1_s8_r8 iter7 与 baseline 23/100、b1_s4_r16 iter15 25/100 的准确率差异。
+
+
+## 2026-06-29 b1_s8_r8 训练后 eval 结果
+
+### 实验目标
+评估 b1_s8_r8 训练后的 checkpoint 是否在 dev_100_direct 上优于 baseline 和 b1_s4_r16。
+
+### 训练信号回顾
+- b1_s4_r16：5/16 非零 grad step，31.25%
+- b1_s8_r8：8/8 非零 grad step，100%
+
+### eval 结果
+- baseline：23/100 = 23%
+- b1_s4_r16 iter15：25/100 = 25%
+- b1_s8_r8 iter7：22/100 = 22%
+
+### 当前结论
+b1_s8_r8 的有效梯度比例明显高于 b1_s4_r16，但 dev_100_direct eval 准确率下降到 22/100，低于 baseline 和 b1_s4_r16。
+
+这说明增加 n-samples-per-prompt 可以增强 GRPO 的训练信号，但当前配置下并没有带来泛化提升，反而可能因为更新过强、训练样本过少、reward 噪声或过拟合导致验证集退化。
+
+### 下一步
+1. 做样本级 before/after 对比，统计 wrong_to_correct、correct_to_wrong、same_correct、same_wrong。
+2. 对比 b1_s8_r8 相比 baseline 和 b1_s4_r16 分别改对了哪些题、改错了哪些题。
+3. 暂时不建议继续盲目加大 s8 训练步数。
+4. 后续优先考虑更保守配置，例如降低学习率、减少 rollout 步数、检查 reward parser，或回到 b1_s4_r16 作为当前可汇报结果。
+
+
+## 2026-06-29 b1_s8_r8 样本级对比分析
+
+### 分析目标
+对 b1_s8_r8 的 dev_100_direct eval 结果做样本级 before/after 对比，判断准确率下降的具体原因。
+
+### 准确率复核
+- baseline：23/100 = 0.2300
+- b1_s4_r16 iter15：25/100 = 0.2500
+- b1_s8_r8 iter7：22/100 = 0.2200
+
+### baseline vs b1_s8_r8_iter7
+- total_common：100
+- wrong_to_correct：1
+- correct_to_wrong：2
+- same_correct：21
+- same_wrong：76
+- prediction_changed：11
+
+结论：b1_s8_r8 相比 baseline 只新增改对 1 题，但把 2 道 baseline 原本正确的题改错，因此整体准确率从 23/100 降到 22/100。
+
+### b1_s4_r16_iter15 vs b1_s8_r8_iter7
+- total_common：100
+- wrong_to_correct：0
+- correct_to_wrong：3
+- same_correct：22
+- same_wrong：75
+- prediction_changed：11
+
+结论：b1_s8_r8 相比当前最好结果 b1_s4_r16 没有新增改对任何题，反而把 3 道原本正确的题改错，因此从 25/100 降到 22/100。
+
+### 预测分布变化
+baseline：
+- A：30
+- B：18
+- C：19
+- D：5
+- E：10
+- F：7
+- H：2
+- J：9
+
+b1_s8_r8_iter7：
+- A：34
+- B：23
+- C：15
+- D：5
+- E：9
+- F：3
+- H：2
+- J：9
+
+观察：b1_s8_r8 训练后预测更偏向 A 和 B，减少了 C 和 F。说明模型行为被训练推偏，但这种分布偏移没有带来准确率提升。
+
+### 当前工程结论
+b1_s8_r8 是一个负结果/消融结果。它证明增加 n-samples-per-prompt 到 8 可以提高有效梯度比例，但当前配置下没有提升泛化性能，反而导致 dev_100_direct 准确率退化。
+
+当前最稳妥的阶段性主结果仍然是 b1_s4_r16：
+- baseline：23/100
+- b1_s4_r16 iter15：25/100
+- 提升：+2 个百分点
+- wrong_to_correct：2
+- correct_to_wrong：0
+
+### 后续建议
+1. 暂时不要继续盲目加大 s8 训练步数。
+2. 后续若继续优化，可尝试降低学习率、减少 rollout 步数、检查 reward parser、扩大训练样本，或重新设计更稳健的 reward。
+3. 对老师/报告汇报时，应把 b1_s8_r8 写成消融实验：训练信号增强，但 eval 退化，说明有效梯度更多不等于泛化更好。
+
+
+## 2026-06-29 b1_s4_r16 vs b1_s8_r8 退化样本定位
+
+### 分析目标
+进一步查看 b1_s8_r8 相比当前最好结果 b1_s4_r16 的样本级退化情况，定位准确率从 25/100 降到 22/100 的原因。
+
+### 对比结果
+b1_s4_r16_iter15 vs b1_s8_r8_iter7：
+
+- total_common：100
+- wrong_to_correct：0
+- correct_to_wrong：3
+- same_correct：22
+- same_wrong：75
+- prediction_changed：11
+
+### 具体 correct_to_wrong 样本
+1. idx=4
+   - label=C
+   - b1_s4_r16_iter15=C
+   - b1_s8_r8_iter7=J
+   - category=business
+   - src=theoremQA-Finance
+
+2. idx=19
+   - label=E
+   - b1_s4_r16_iter15=E
+   - b1_s8_r8_iter7=A
+   - category=business
+   - src=stemez-Business
+
+3. idx=41
+   - label=C
+   - b1_s4_r16_iter15=C
+   - b1_s8_r8_iter7=B
+   - category=business
+   - src=stemez-Business
+
+### 结论
+b1_s8_r8 相比 b1_s4_r16 没有新增改对任何样本，反而将 3 道 b1_s4_r16 已经答对的样本改错。因此 b1_s8_r8 的准确率下降主要来自 correct_to_wrong，而不是 simply 没有提升。
+
+其中 idx=4 是 b1_s4_r16 中较重要的正向样本，b1_s8_r8 将其从正确答案 C 改成 J，说明 s8 的更新没有稳定保留 s4 的收益。
+
+### 当前判断
+b1_s8_r8 是负结果/消融结果。它证明 n-samples-per-prompt=8 可以增强训练信号密度，但当前配置下会破坏已有正确样本，导致 dev_100_direct 泛化退化。
+
+当前主结果仍应采用 b1_s4_r16：
+- baseline：23/100
+- b1_s4_r16 iter15：25/100
+- b1_s8_r8 iter7：22/100
+
+### 下一步
+1. 暂停继续扩大 s8。
+2. 若继续优化，可优先尝试降低学习率、减少训练步数、扩大训练数据、检查 reward parser。
+3. 工程汇报中将 b1_s8_r8 作为消融实验，而不是主结果。
+4. 下一阶段确认服务器是否存在老师指定的 Qwen3.5-2B，并决定是否复跑同一流程。
+
+
+## 2026-06-29 Qwen3.5-2B 适配问题与当前汇报口径
+
+### 背景
+老师原始任务希望跑 SLIME 在 MMLU-Pro 上做强化学习 demo，模型使用 qwen3.5-2B。
+
+### 当前实际完成情况
+当前已先使用服务器本地可用的 Qwen2.5-1.5B-Instruct 跑通 SLIME + MMLU-Pro 强化学习 demo 闭环，包括：
+- baseline eval
+- reward function 接入
+- SLIME rollout
+- GRPO 训练
+- checkpoint 保存
+- Megatron / torch distributed checkpoint 转 HuggingFace
+- 训练后 dev_100_direct eval
+- before/after 样本级对比
+
+### Qwen3.5-2B 未完成原因
+前期尝试适配 qwen3.5-2B 时，在 Transformer Engine DotProductAttention 路径遇到：
+
+ValueError: No dot product attention backend is available for the provided inputs.
+
+该错误发生在 ref_log_probs forward / MegatronTrainRayActor.train() / Transformer Engine DotProductAttention 相关路径中。
+
+### 排查结论
+该问题不是 MMLU-Pro 数据、reward function 或 SLIME 主训练流程的问题，而是模型执行层的 attention backend 选择失败。
+
+已知排查点：
+- 旧脚本中曾设置 NVTE_FLASH_ATTN=0、NVTE_FUSED_ATTN=0、NVTE_UNFUSED_ATTN=1。
+- 但 UnfusedDotProductAttention 因 qkv_format=thd 被禁用。
+- FlashAttention 3 因当前 GPU compute capability 不是 sm90 被禁用。
+- FlashAttention 2 因 head_dim_qk/head_dim_v=256 在当前 sm86 环境下不支持而被禁用。
+- Fused/cuDNN 路径后续也未能选出可用 backend。
+- 最终 Transformer Engine selected backend = NoBackend。
+
+### 当前判断
+Qwen3.5-2B 在当前 RTX 3090 / sm86 + Transformer Engine 路径下存在 attention backend 兼容性 blocker。为避免长期卡在模型执行层适配问题，当前先切换到 Qwen2.5-1.5B-Instruct 完成 SLIME + MMLU-Pro RL demo 工程闭环。
+
+### 对外汇报口径
+目前已用服务器本地可用的 Qwen2.5-1.5B-Instruct 跑通 SLIME + MMLU-Pro 强化学习 demo 闭环。qwen3.5-2B 严格版本尚未完成，原因是 Transformer Engine 没有为该模型在当前硬件/软件环境下选到可用的 dot product attention backend。后续如需严格复跑 qwen3.5-2B，需要进一步处理 Transformer Engine / FlashAttention / cuDNN / GPU 架构兼容性问题，或更换支持该 attention 配置的运行环境。
+
