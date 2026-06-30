@@ -1878,3 +1878,95 @@ Qwen3.5-2B 在当前 RTX 3090 / sm86 + Transformer Engine 路径下存在 attent
 ### 对外汇报口径
 目前已用服务器本地可用的 Qwen2.5-1.5B-Instruct 跑通 SLIME + MMLU-Pro 强化学习 demo 闭环。qwen3.5-2B 严格版本尚未完成，原因是 Transformer Engine 没有为该模型在当前硬件/软件环境下选到可用的 dot product attention backend。后续如需严格复跑 qwen3.5-2B，需要进一步处理 Transformer Engine / FlashAttention / cuDNN / GPU 架构兼容性问题，或更换支持该 attention 配置的运行环境。
 
+
+## 2026-06-30 PRO6000 Qwen3.5-35B-A3B 推理链路排查汇总
+
+### 阶段
+将 SLIME + MMLU-Pro demo 迁移到 PRO6000 平台，优先测试 `/models/Qwen3.5-35B-A3B`。当前目标是在进入 MMLU-Pro baseline 或 SLIME 训练前，先确认 35B-A3B 的推理链路是否可靠。
+
+### 环境状态
+- GPU：4 × NVIDIA RTX PRO 6000 Blackwell Server Edition
+- 单卡显存：约 95 GiB / 96GB
+- PyTorch：2.11.0+cu129
+- torch CUDA：12.9
+- 模型路径：`/models/Qwen3.5-35B-A3B`
+- 数据集路径：`/data/MMLU-Pro`
+- 代码仓库：`/workspace/slime-mmlu-pro-demo`
+
+### 模型与数据检查
+- Qwen3.5-35B-A3B 模型目录存在，约 67 GiB，包含 14 个 safetensors 权重分片。
+- tokenizer/config 可读。
+- model_type: `qwen3_5_moe`
+- architectures: `['Qwen3_5MoeForConditionalGeneration']`
+- MMLU-Pro 数据集可读：test 12032 rows，validation 70 rows。
+
+### 模型加载检查
+使用 Transformers 加载模型成功：
+- `trust_remote_code=True`
+- `local_files_only=True`
+- `torch_dtype=torch.bfloat16`
+- `device_map="auto"`
+- `max_memory={i: "85GiB"}`
+
+模型可切分加载到 4 张 GPU，显存充足，不是 OOM 或 GPU 不可见问题。
+
+### 推理异常
+普通生成与选择题 scoring 均异常：
+- 裸 prompt 生成出现 `sach sach ...`
+- chat template 生成出现大量 `!`
+- 普通 `1+1` 中文问答生成异常重复内容
+- 对 `2+2=?` 的 A/B/C/D logprob 全部相同，约为 `-12.4375`
+
+### 权重与 loading_info 检查
+模型权重加载完整：
+- missing_keys count: 0
+- unexpected_keys count: 0
+- mismatched_keys count: 0
+
+关键权重非零：
+- `model.embed_tokens.weight std = 0.01264`
+- `lm_head.weight std = 0.01880`
+- `model.norm.weight std = 0.22299`
+- `model.layers.0.mlp.gate.weight std = 0.02305`
+- `model.layers.0.mlp.experts.gate_up_proj std = 0.00694`
+- `model.layers.0.mlp.experts.down_proj std = 0.00770`
+
+### hidden/logits 深度诊断
+forward 输出异常：
+- `last_hidden finite = True`
+- `last_hidden min = 0.0`
+- `last_hidden max = 0.0`
+- `last_hidden mean = 0.0`
+- `last_hidden std = 0.0`
+- `out.logits finite = True`
+- `out.logits std = 0.0`
+
+当前判断：问题发生在 `lm_head` 之前。模型 backbone forward 已经产生全 0 hidden state。模型文件、lm_head、embedding 和 MoE 权重不像损坏。
+
+### FLA / causal-conv1d 依赖排查
+依赖检查结果：
+- `fla OK 0.4.1`
+- `causal_conv1d` 原本缺失
+
+普通 `pip install causal-conv1d` 失败，原因是 pip build isolation 临时使用了 `torch 2.12.1+cu130`，与当前 CUDA 12.9 不匹配。
+
+随后改用 `--no-build-isolation`，强制使用当前 torch 2.11.0+cu129 / CUDA 12.9 编译，最终成功：
+- Successfully built causal-conv1d
+- Successfully installed causal-conv1d-1.6.2.post1
+
+### causal-conv1d 安装后复测
+安装 `causal-conv1d` 后，重新运行 hidden/logits 诊断，结果仍异常：
+- `last_hidden std = 0.0`
+- `out.logits std = 0.0`
+
+### 当前结论
+`causal-conv1d` 缺失不是唯一原因，或者当前诊断脚本仍强制使用 eager 路径，未走到默认/fast attention。当前问题继续收窄到：
+1. `attn_implementation="eager"` 路径问题；
+2. `device_map="auto"` 多卡切分问题；
+3. 当前 Transformers 5.8.1 对 Qwen3.5-35B-A3B forward 适配异常；
+4. 后续可能需要转 SGLang/vLLM 后端测试。
+
+### 下一步
+1. 新建不指定 `attn_implementation` 的默认 attention 诊断脚本。
+2. 如果默认 attention 仍然 `last_hidden std = 0`，做单卡加载诊断，排除 `device_map="auto"` 多卡切分问题。
+3. 如果单卡仍异常，则转 SGLang/vLLM 后端继续测试 Qwen3.5-35B-A3B。
